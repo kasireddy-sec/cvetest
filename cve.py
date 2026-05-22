@@ -158,75 +158,37 @@ def append_rows(sheet_name, rows):
 
     wb.close()
 
-# =========================================================
+# ============================================================
 # PALO ALTO
 # FINAL STABLE VERSION
-# =========================================================
+# WORKS IN GITHUB ACTIONS + LOCAL
+# ============================================================
 
 def run_paloalto():
 
     print("\nRunning Palo Alto RSS Fetch...\n")
 
-    RSS_URL = (
-        "https://security.paloaltonetworks.com/rss.xml"
-    )
+    RSS_URL = "https://security.paloaltonetworks.com/rss.xml"
 
-    existing_keys = load_existing_keys(
-        "PALOALTO"
-    )
+    existing_keys = load_existing_keys("PALOALTO")
 
     new_rows = []
 
-    # =====================================================
-    # GET LATEST DATE FROM PAGE
-    # =====================================================
+    # ========================================================
+    # EXTRACT UPDATED DATE
+    # ========================================================
 
-    def extract_latest_date(url):
+    def extract_updated_date(url):
 
         try:
 
-            with sync_playwright() as p:
+            response = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=60
+            )
 
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-dev-shm-usage",
-                        "--no-sandbox"
-                    ]
-                )
-
-                context = browser.new_context(
-
-                    user_agent=(
-                        "Mozilla/5.0 "
-                        "(Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) "
-                        "Chrome/136 Safari/537.36"
-                    )
-
-                )
-
-                page = context.new_page()
-
-                page.goto(
-                    url,
-                    wait_until="networkidle",
-                    timeout=120000
-                )
-
-                # =========================================
-                # EXTRA WAIT FOR JS RENDERING
-                # =========================================
-
-                page.wait_for_timeout(8000)
-
-                text = page.locator(
-                    "body"
-                ).inner_text()
-
-                browser.close()
+            html = response.text
 
         except Exception as e:
 
@@ -236,56 +198,54 @@ def run_paloalto():
 
             return "UNKNOWN"
 
-        # =============================================
-        # EXTRACT ALL DATES
-        # =============================================
+        # ====================================================
+        # PRIMARY MATCH
+        # ====================================================
 
-        found_dates = re.findall(
-            r"\d{4}-\d{2}-\d{2}",
-            text
+        updated_match = re.search(
+            r'Updated\s*</[^>]+>\s*<[^>]+>\s*(\d{4}-\d{2}-\d{2})',
+            html,
+            re.IGNORECASE
         )
 
-        if not found_dates:
+        if updated_match:
 
-            return "UNKNOWN"
+            return updated_match.group(1)
 
-        # =============================================
-        # TAKE MOST RECENT DATE
-        # =============================================
+        # ====================================================
+        # SECONDARY MATCH
+        # ====================================================
 
-        valid_dates = []
-
-        for d in found_dates:
-
-            try:
-
-                parsed = datetime.strptime(
-                    d,
-                    "%Y-%m-%d"
-                )
-
-                valid_dates.append(parsed)
-
-            except:
-                continue
-
-        if not valid_dates:
-
-            return "UNKNOWN"
-
-        latest_date = max(valid_dates)
-
-        return latest_date.strftime(
-            "%Y-%m-%d"
+        updated_match = re.search(
+            r'Updated.*?(\d{4}-\d{2}-\d{2})',
+            html,
+            re.IGNORECASE | re.DOTALL
         )
 
-    # =====================================================
-    # PARSE RSS
-    # =====================================================
+        if updated_match:
 
-    feed = feedparser.parse(
-        RSS_URL
-    )
+            return updated_match.group(1)
+
+        # ====================================================
+        # FALLBACK
+        # ====================================================
+
+        all_dates = re.findall(
+            r'\d{4}-\d{2}-\d{2}',
+            html
+        )
+
+        if all_dates:
+
+            return max(all_dates)
+
+        return "UNKNOWN"
+
+    # ========================================================
+    # PARSE RSS FEED
+    # ========================================================
+
+    feed = feedparser.parse(RSS_URL)
 
     for entry in feed.entries:
 
@@ -293,9 +253,9 @@ def run_paloalto():
 
         link = entry.link.strip()
 
-        # =================================================
+        # ====================================================
         # EXTRACT CVE
-        # =================================================
+        # ====================================================
 
         cve_match = re.search(
             CVE_PATTERN,
@@ -310,49 +270,43 @@ def run_paloalto():
             cve_match.group()
         )
 
-        # =================================================
-        # GET FINAL DATE
-        # =================================================
+        # ====================================================
+        # GET UPDATED DATE
+        # ====================================================
 
-        final_date = extract_latest_date(
-            link
-        )
+        updated_date = extract_updated_date(link)
 
         print("\n" + "=" * 70)
 
-        print("CVE         :", cve)
+        print("CVE           :", cve)
 
-        print("FINAL DATE  :", final_date)
+        print("UPDATED DATE  :", updated_date)
 
-        print("LINK        :", link)
+        print("LINK          :", link)
 
-        if final_date == "UNKNOWN":
-            continue
-
-        # =================================================
+        # ====================================================
         # DUPLICATE LOGIC
-        # =================================================
+        # ====================================================
 
         key = (
             cve,
-            final_date,
+            updated_date,
             link
         )
 
-        if key in existing_keys:
-            continue
+        if key not in existing_keys:
 
-        new_rows.append((
-            cve,
-            final_date,
-            link
-        ))
+            new_rows.append((
+                cve,
+                updated_date,
+                link
+            ))
 
-        existing_keys.add(key)
+            existing_keys.add(key)
 
-    # =====================================================
+    # ========================================================
     # SAVE
-    # =====================================================
+    # ========================================================
 
     if new_rows:
 
@@ -367,9 +321,7 @@ def run_paloalto():
 
     else:
 
-        print(
-            "\nNo new rows found"
-        )
+        print("\nNo new rows found")
 
 # =========================================================
 # BLEEPING COMPUTER
